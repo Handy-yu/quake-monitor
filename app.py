@@ -502,34 +502,34 @@ if not df.empty:
             st.info("Not enough depth data for cross-section view.")
 
     with tabs[5]:
-            # ─── Engineering Impact Ranking ───
-    st.subheader("🏗️ Engineering Impact Ranking")
-    st.caption("Sorted by estimated JMA intensity, not magnitude. This is what civil engineers care about.")
-    valid_eng = df.dropna(subset=["mag", "depth_km", "lat", "lon"]).copy()
-    if len(valid_eng) > 0:
-        # Calculate distance to nearest city for each quake
-        cities_data = []
-        for _, row in valid_eng.iterrows():
-            city, dist = nearest_city(row["lat"], row["lon"])
-            jma, jma_str, _ = estimate_jma_intensity(row["mag"], row["depth_km"], dist)
-            pga, pga_str, _ = estimate_pga_gal(row["mag"], dist, row["depth_km"])
-            cities_data.append({
-                "time": row["time"], "mag": row["mag"], "depth_km": row["depth_km"],
-                "place": row["place"], "nearest_city": city, "dist_km": dist,
-                "jma": jma, "jma_str": jma_str, "pga_gal": pga,
-                "tsunami": row["tsunami"]
-            })
-        eng_df = pd.DataFrame(cities_data).sort_values("jma", ascending=False, na_position="last").head(20)
-        st.dataframe(eng_df[[
-            "time", "mag", "jma_str", "nearest_city", "dist_km", "pga_gal", "depth_km", "place", "tsunami"
-        ]].rename(columns={
-            "time": "Time (UTC)", "mag": "Magnitude", "jma_str": "JMA Intensity",
-            "nearest_city": "Nearest City", "dist_km": "Distance (km)",
-            "pga_gal": "PGA (gal)", "depth_km": "Depth (km)", "place": "Location"
-        }), hide_index=True, use_container_width=True)
-        st.caption("*JMA intensity estimated via attenuation formula. PGA via simplified GMPE. For reference only.")
-    else:
-        st.info("No data available for engineering analysis.")
+        # ─── Engineering Impact Ranking ───
+        st.subheader("🏗️ Engineering Impact Ranking")
+        st.caption("Sorted by estimated JMA intensity, not magnitude. This is what civil engineers care about.")
+        valid_eng = df.dropna(subset=["mag", "depth_km", "lat", "lon"]).copy()
+        if len(valid_eng) > 0:
+            # Calculate distance to nearest city for each quake
+            cities_data = []
+            for _, row in valid_eng.iterrows():
+                city, dist = nearest_city(row["lat"], row["lon"])
+                jma, jma_str, _ = estimate_jma_intensity(row["mag"], row["depth_km"], dist)
+                pga, pga_str, _ = estimate_pga_gal(row["mag"], dist, row["depth_km"])
+                cities_data.append({
+                    "time": row["time"], "mag": row["mag"], "depth_km": row["depth_km"],
+                    "place": row["place"], "nearest_city": city, "dist_km": dist,
+                    "jma": jma, "jma_str": jma_str, "pga_gal": pga,
+                    "tsunami": row["tsunami"]
+                })
+            eng_df = pd.DataFrame(cities_data).sort_values("jma", ascending=False, na_position="last").head(20)
+            st.dataframe(eng_df[[
+                "time", "mag", "jma_str", "nearest_city", "dist_km", "pga_gal", "depth_km", "place", "tsunami"
+            ]].rename(columns={
+                "time": "Time (UTC)", "mag": "Magnitude", "jma_str": "JMA Intensity",
+                "nearest_city": "Nearest City", "dist_km": "Distance (km)",
+                "pga_gal": "PGA (gal)", "depth_km": "Depth (km)", "place": "Location"
+            }), hide_index=True, use_container_width=True)
+            st.caption("*JMA intensity estimated via attenuation formula. PGA via simplified GMPE. For reference only.")
+        else:
+            st.info("No data available for engineering analysis.")
 
     st.divider()
     st.subheader("Raw Data Browser")
@@ -751,6 +751,7 @@ with st.expander(t("about")):
         """)
 
 st.caption("— MuYu (沐雨)")
+
 
 
 
