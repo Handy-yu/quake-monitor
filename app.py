@@ -1,4 +1,4 @@
-﻿"""
+"""
 QuakeMonitor 2.0 — Global Earthquake Analysis Platform
 ========================================================
 Data: USGS Earthquake Catalog
@@ -531,8 +531,8 @@ if not df.empty:
         else:
             st.info("No data available for engineering analysis.")
 
-    st.divider()
-    st.subheader("Raw Data Browser")
+        st.divider()
+        st.subheader("Raw Data Browser")
         st.caption("Sort, search, filter, export")
         if not df.empty:
             display_cols = ["time", "mag", "depth_km", "lat", "lon", "place", "tsunami", "url"]
@@ -751,6 +751,7 @@ with st.expander(t("about")):
         """)
 
 st.caption("— MuYu (沐雨)")
+
 
 
 
