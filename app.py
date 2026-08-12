@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import seaborn as sns
 import requests
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from scipy import stats
@@ -61,7 +62,7 @@ LANG = {
         "m6_alert": "📢 M6+速報",
         "about": "ℹ️ 本サイトについて",
         "export": "📥 CSV出力",
-        "lang_toggle": "中文",
+        "lang_toggle": "English",
     },"zh": {
         "title": "🌏 QuakeMonitor 2.0 — 全球地震监测与工程分析平台",
         "subtitle": "数据: USGS | 焦點: 日本地震危险性分析 | 用途: 土木工程·抗震方向研究",
@@ -93,7 +94,7 @@ LANG = {
         "m6_alert": "📢 最新 M6+ 速报",
         "about": "ℹ️ 关于本站",
         "export": "📥 导出 CSV",
-        "lang_toggle": "English",
+        "lang_toggle": "日本語",
     },
     "en": {
         "title": "🌏 QuakeMonitor 2.0 — Global Earthquake Analysis Platform",
@@ -141,7 +142,7 @@ def t(key):
     return LANG[st.session_state.lang].get(key, key)
 
 # ─── Font ───
-plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
+plt.rcParams["font.sans-serif"] = ["SimSun", "KaiTi", "Microsoft YaHei", "SimHei", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
 sns.set_style("whitegrid")
 
@@ -185,8 +186,19 @@ def fetch_quakes(min_magnitude=2.5, limit=20000, days_back=30,
         "minmagnitude": min_magnitude,
         "orderby": "time", "limit": limit,
     }
-    resp = requests.get(url, params=params, timeout=120)
-    resp.raise_for_status()
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, params=params, timeout=60)
+            resp.raise_for_status()
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+    if last_err is not None:
+        raise last_err
     data = resp.json()
     features = data.get("features", [])
     records = []
@@ -354,6 +366,96 @@ def plot_magnitude_histogram(df):
     fig.tight_layout()
     return fig
 
+# ═══════════════════════════════════════════════
+# ENGINEERING UTILITIES — Real analysis tools
+# ═══════════════════════════════════════════════
+
+# Japanese major cities (for distance calculation)
+JP_CITIES = {
+    "Tokyo": (35.68, 139.76), "Osaka": (34.69, 135.50),
+    "Nagoya": (35.18, 136.90), "Fukuoka": (33.59, 130.40),
+    "Sapporo": (43.06, 141.35), "Sendai": (38.27, 140.87),
+    "Hiroshima": (34.39, 132.46), "Kobe": (34.69, 135.20),
+    "Kyoto": (35.01, 135.77), "Naha": (26.21, 127.68),
+}
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    """Great-circle distance between two points (km)"""
+    R = 6371
+    dlat = np.radians(lat2 - lat1)
+    dlon = np.radians(lon2 - lon1)
+    a = np.sin(dlat/2)**2 + np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.sin(dlon/2)**2
+    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
+
+def nearest_city(lat, lon):
+    """Find nearest Japanese city and distance"""
+    best_city, best_dist = None, float("inf")
+    for city, (clat, clon) in JP_CITIES.items():
+        d = haversine_km(lat, lon, clat, clon)
+        if d < best_dist:
+            best_dist, best_city = d, city
+    return best_city, round(best_dist, 0)
+
+def estimate_jma_intensity(mag, depth_km, dist_km):
+    """Estimate JMA seismic intensity (震度) using simplified empirical formula.
+    Based on Matsuoka and Midorikawa (1994) with adjustments.
+    Returns: (intensity_float, intensity_str, color_class)
+    """
+    if depth_km is None or dist_km is None or mag is None:
+        return None, "N/A", "#888"
+    # Simplified attenuation: I = mag - log10(dist) - 0.0015*dist - 0.005*depth + 1.5
+    i_float = mag - np.log10(max(dist_km, 1)) - 0.0015 * dist_km - 0.005 * depth_km + 1.5
+    i_float = max(0, min(7, i_float))
+    # Map to JMA scale labels (0-7)
+    labels = {0: "0", 1: "1", 2: "2", 3: "3", 4: "4", 5: "5弱", 6: "5強", 7: "6弱以上"}
+    colors = {0: "#4CAF50", 1: "#8BC34A", 2: "#FFC107", 3: "#FF9800", 4: "#F44336", 5: "#E91E63", 6: "#9C27B0", 7: "#7B1FA2"}
+    idx = min(int(i_float), 7)
+    return round(i_float, 1), labels[idx], colors[idx]
+
+def estimate_pga_gal(mag, dist_km, depth_km=None):
+    """Simple PGA estimation (gal = cm/s^2) using Joyner-Boore type attenuation.
+    log10(PGA) = 0.43*M - log10(R) - 0.0027*R + 1.3
+    where R = sqrt(dist^2 + h^2), h is focal depth proxy.
+    Returns: (pga_gal, category_str, hazard_color)
+    """
+    if mag is None or dist_km is None:
+        return None, "N/A", "#888"
+    h = max(depth_km, 8) if depth_km else 10
+    R = np.sqrt(dist_km**2 + h**2)
+    log_pga = 0.43 * mag - np.log10(max(R, 1)) - 0.0027 * R + 1.3
+    pga = 10 ** log_pga  # gal (cm/s2)
+    if pga < 1: cat, col = "Negligible (<1 gal)", "#4CAF50"
+    elif pga < 10: cat, col = "Light (1-10 gal)", "#8BC34A"
+    elif pga < 80: cat, col = "Moderate (10-80 gal)", "#FFC107"
+    elif pga < 250: cat, col = "Strong (80-250 gal)", "#FF9800"
+    elif pga < 400: cat, col = f"Very Strong ({pga:.0f} gal)", "#F44336"
+    else: cat, col = f"Severe ({pga:.0f} gal)", "#9C27B0"
+    return round(pga, 1), cat, col
+
+# Engineering insight for each magnitude range
+def engineering_context(mag, depth_km, dist_km):
+    """Provide engineering significance of an earthquake"""
+    if mag is None: return ""
+    jma, jma_str, _ = estimate_jma_intensity(mag, depth_km, dist_km)
+    pga, pga_str, _ = estimate_pga_gal(mag, dist_km, depth_km)
+    insights = []
+    if mag >= 9.0: insights.append("Giant earthquake. Can trigger tsunamis >10m. Building codes test for this level.")
+    elif mag >= 8.0: insights.append("Great earthquake. Subduction zone megathrust events. Key for seismic design spectra.")
+    elif mag >= 7.0: insights.append("Major earthquake. Can cause severe damage near epicenter. Requires ductile design.")
+    elif mag >= 6.0: insights.append("Strong earthquake. Damage potential in populated areas. Equivalent to design-basis earthquake.")
+    elif mag >= 5.0: insights.append("Moderate earthquake. Usually felt but minor damage. Useful for seismicity analysis.")
+    else: insights.append("Small earthquake. Important for b-value statistics and background seismicity.")
+    
+    if depth_km and depth_km <= 70:
+        insights.append(f"Shallow crustal ({depth_km:.0f}km). Higher damage potential at surface.")
+    elif depth_km and depth_km > 300:
+        insights.append(f"Deep focus ({depth_km:.0f}km). Low surface shaking despite high magnitude.")
+    
+    if dist_km and dist_km <= 50:
+        insights.append(f"Near-field ({dist_km:.0f}km from city). Peak ground acceleration is a key concern.")
+    
+    return " ".join(insights)
+
 # ═══════════════ UI ═══════════════
 
 # Language toggle (3-way: ZH -> JA -> EN -> ZH)
@@ -405,7 +507,8 @@ with st.spinner("Fetching from USGS Earthquake Catalog..."):
                           min_lon=lon_min, max_lon=lon_max)
         load_error = False
     except Exception as e:
-        st.error(f"Data fetch failed: {e}")
+        st.error(f"❌ 无法连接 USGS 地震数据服务：{e}")
+        st.info("可能原因：当前网络无法直连 USGS（大陆直连常不稳定）。建议：① 检查网络或开启代理；② 点击侧边栏「🔄 刷新数据」重试；③ 稍后再试。")
         df = pd.DataFrame()
         load_error = True
 
@@ -578,95 +681,6 @@ if not df.empty:
             )
 
 
-# ═══════════════════════════════════════════════
-# ENGINEERING UTILITIES — Real analysis tools
-# ═══════════════════════════════════════════════
-
-# Japanese major cities (for distance calculation)
-JP_CITIES = {
-    "Tokyo": (35.68, 139.76), "Osaka": (34.69, 135.50),
-    "Nagoya": (35.18, 136.90), "Fukuoka": (33.59, 130.40),
-    "Sapporo": (43.06, 141.35), "Sendai": (38.27, 140.87),
-    "Hiroshima": (34.39, 132.46), "Kobe": (34.69, 135.20),
-    "Kyoto": (35.01, 135.77), "Naha": (26.21, 127.68),
-}
-
-def haversine_km(lat1, lon1, lat2, lon2):
-    """Great-circle distance between two points (km)"""
-    R = 6371
-    dlat = np.radians(lat2 - lat1)
-    dlon = np.radians(lon2 - lon1)
-    a = np.sin(dlat/2)**2 + np.cos(np.radians(lat1)) * np.cos(np.radians(lat2)) * np.sin(dlon/2)**2
-    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
-
-def nearest_city(lat, lon):
-    """Find nearest Japanese city and distance"""
-    best_city, best_dist = None, float("inf")
-    for city, (clat, clon) in JP_CITIES.items():
-        d = haversine_km(lat, lon, clat, clon)
-        if d < best_dist:
-            best_dist, best_city = d, city
-    return best_city, round(best_dist, 0)
-
-def estimate_jma_intensity(mag, depth_km, dist_km):
-    """Estimate JMA seismic intensity (震度) using simplified empirical formula.
-    Based on Matsuoka and Midorikawa (1994) with adjustments.
-    Returns: (intensity_float, intensity_str, color_class)
-    """
-    if depth_km is None or dist_km is None or mag is None:
-        return None, "N/A", "#888"
-    # Simplified attenuation: I = mag - log10(dist) - 0.0015*dist - 0.005*depth + 1.5
-    i_float = mag - np.log10(max(dist_km, 1)) - 0.0015 * dist_km - 0.005 * depth_km + 1.5
-    i_float = max(0, min(7, i_float))
-    # Map to JMA scale labels (0-7)
-    labels = {0: "0", 1: "1", 2: "2", 3: "3", 4: "4", 5: "5弱", 6: "5強", 7: "6弱以上"}
-    colors = {0: "#4CAF50", 1: "#8BC34A", 2: "#FFC107", 3: "#FF9800", 4: "#F44336", 5: "#E91E63", 6: "#9C27B0", 7: "#7B1FA2"}
-    idx = min(int(i_float), 7)
-    return round(i_float, 1), labels[idx], colors[idx]
-
-def estimate_pga_gal(mag, dist_km, depth_km=None):
-    """Simple PGA estimation (gal = cm/s^2) using Joyner-Boore type attenuation.
-    log10(PGA) = 0.43*M - log10(R) - 0.0027*R + 1.3
-    where R = sqrt(dist^2 + h^2), h is focal depth proxy.
-    Returns: (pga_gal, category_str, hazard_color)
-    """
-    if mag is None or dist_km is None:
-        return None, "N/A", "#888"
-    h = max(depth_km, 8) if depth_km else 10
-    R = np.sqrt(dist_km**2 + h**2)
-    log_pga = 0.43 * mag - np.log10(max(R, 1)) - 0.0027 * R + 1.3
-    pga = 10 ** log_pga  # gal (cm/s2)
-    if pga < 1: cat, col = "Negligible (<1 gal)", "#4CAF50"
-    elif pga < 10: cat, col = "Light (1-10 gal)", "#8BC34A"
-    elif pga < 80: cat, col = "Moderate (10-80 gal)", "#FFC107"
-    elif pga < 250: cat, col = "Strong (80-250 gal)", "#FF9800"
-    elif pga < 400: cat, col = f"Very Strong ({pga:.0f} gal)", "#F44336"
-    else: cat, col = f"Severe ({pga:.0f} gal)", "#9C27B0"
-    return round(pga, 1), cat, col
-
-# Engineering insight for each magnitude range
-def engineering_context(mag, depth_km, dist_km):
-    """Provide engineering significance of an earthquake"""
-    if mag is None: return ""
-    jma, jma_str, _ = estimate_jma_intensity(mag, depth_km, dist_km)
-    pga, pga_str, _ = estimate_pga_gal(mag, dist_km, depth_km)
-    insights = []
-    if mag >= 9.0: insights.append("Giant earthquake. Can trigger tsunamis >10m. Building codes test for this level.")
-    elif mag >= 8.0: insights.append("Great earthquake. Subduction zone megathrust events. Key for seismic design spectra.")
-    elif mag >= 7.0: insights.append("Major earthquake. Can cause severe damage near epicenter. Requires ductile design.")
-    elif mag >= 6.0: insights.append("Strong earthquake. Damage potential in populated areas. Equivalent to design-basis earthquake.")
-    elif mag >= 5.0: insights.append("Moderate earthquake. Usually felt but minor damage. Useful for seismicity analysis.")
-    else: insights.append("Small earthquake. Important for b-value statistics and background seismicity.")
-    
-    if depth_km and depth_km <= 70:
-        insights.append(f"Shallow crustal ({depth_km:.0f}km). Higher damage potential at surface.")
-    elif depth_km and depth_km > 300:
-        insights.append(f"Deep focus ({depth_km:.0f}km). Low surface shaking despite high magnitude.")
-    
-    if dist_km and dist_km <= 50:
-        insights.append(f"Near-field ({dist_km:.0f}km from city). Peak ground acceleration is a key concern.")
-    
-    return " ".join(insights)
 # ─── About ───
 st.divider()
 with st.expander(t("about")):
