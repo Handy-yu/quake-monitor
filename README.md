@@ -3,7 +3,7 @@
 A Streamlit-based interactive global earthquake monitoring and engineering analysis platform.  
 Data sourced from **USGS Earthquake Catalog** (FDSN API).
 
-> Built for earthquake engineering research and graduate school applications.
+
 
 ## ✨ Features
 
